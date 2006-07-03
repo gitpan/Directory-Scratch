@@ -8,7 +8,7 @@ use File::Temp;
 use File::Spec;
 use Carp;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 sub new {
     my $class = shift;
@@ -37,7 +37,10 @@ sub mkdir {
     my @directories = File::Spec->splitdir($dir);
     foreach my $directory (@directories){
 	$base = File::Spec->catdir($base, $directory);
-	mkdir $base or die "Failed to create $base: $!";
+	mkdir $base;
+	
+	die "Failed to create $base: $!"
+	  if !-d $base;
     }
     
     return $base;
@@ -85,7 +88,7 @@ Directory::Scratch - Easy-to-use self-cleaning scratch space.
 
 =head1 VERSION
 
-Version 0.01
+Version 0.02
 
 =cut
 
