@@ -8,7 +8,7 @@ use File::Temp;
 use File::Spec;
 use Carp;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 sub new {
     my $class = shift;
@@ -50,7 +50,7 @@ sub touch {
     my $self = shift;
     my $path = shift;
     my $base = $self->base;
-    my @lines;
+    my @lines= @_;
 
     $path = File::Spec->catdir($base, $path);
 
