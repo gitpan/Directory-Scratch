@@ -6,18 +6,19 @@ use warnings;
 use strict;
 use File::Temp;
 use File::Spec;
+use File::Slurp qw(read_file write_file);
 use Carp;
+use Smart::Comments;
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 sub new {
     my $class = shift;
     my $self  = {};
     
     my $dir = File::Temp::tempdir( CLEANUP => 1 );
-
-    croak "Couldn't create a tempdir: $!"
-      if !-e $dir || !-d _;
+    
+    croak "Couldn't create a tempdir: $!" if !-d $dir;
     $self->{base} = $dir;
 
     bless $self, $class;    
@@ -29,6 +30,15 @@ sub base {
     return $self->{base};
 }
 
+sub exists {
+    my $self = shift;
+    my $file = shift;
+    my $base = $self->base;
+    my $path = File::Spec->catfile($base, $file);
+    return $path if -e $path;
+    return;
+}
+
 sub mkdir {
     my $self = shift;
     my $dir  = shift;
@@ -38,27 +48,135 @@ sub mkdir {
     foreach my $directory (@directories){
 	$base = File::Spec->catdir($base, $directory);
 	mkdir $base;
-	
-	die "Failed to create $base: $!"
-	  if !-d $base;
+	die "Failed to create $base: $!" if !-d $base;
     }
     
     return $base;
 }
 
+sub link {
+    my $self = shift;
+    my $from = shift;
+    my $to   = shift;
+    my $base = $self->base;
+    
+    $from = File::Spec->catfile($base, $from);
+    $to   = File::Spec->catfile($base, $to);
+
+    return symlink($from, $to) || die "Couldn't link $from to $to: $!";
+}
+
+
+sub read {
+    my $self = shift;
+    my $file = shift;
+    my $base = $self->base;
+    
+    $file = File::Spec->catfile($base, $file);
+    
+    if(wantarray){
+	my @lines = read_file($file);
+	chomp @lines;
+	return @lines;
+    }
+    else {
+	my $scalar = read_file($file);
+	chomp $scalar;
+	return $scalar;
+    }
+}
+
+sub write {
+    my $self   = shift;
+    my $file   = shift;
+    my @lines  = @_;
+    my $base   = $self->base;
+    
+    my $_file; 
+    if(!($_file = $self->exists($file))){
+	$file = $self->touch($file); # creates parent directories
+    }
+    else {
+	$file = $_file;
+    }
+    
+    my $args = {};
+
+    my (undef, undef, undef, $method) = caller(1);
+    
+    if(defined $method && $method eq 'Directory::Scratch::append'){
+	$args = {append => 1};
+    }
+    
+    @lines = map { "$_\n" } @lines;
+    write_file($file, $args, @lines) or die "Error writing file: $!";
+}
+
+sub append {
+    return &write(@_); # magic!
+}
+
 sub touch {
     my $self = shift;
-    my $path = shift;
+    my $file = shift;
     my $base = $self->base;
     my @lines= @_;
+    
+    # create parent dir
+    my @directories = File::Spec->splitdir($file);
+    pop @directories; # pop off filename
 
-    $path = File::Spec->catdir($base, $path);
+    my $parents = File::Spec->catdir(@directories);
+    $self->mkdir($parents) if $parents;
+    
+    my $path = File::Spec->catfile($base, $file);
 
     open(my $fh, '>', $path) or die "Failed to open $path: $!";
     map {print {$fh} "$_\n"  or die "Write error: $!"} @lines if @lines;
     close($fh)               or die "Failed to close $path: $!";
     
     return $path;
+}
+
+sub ls {
+    my $self = shift;
+    my $dir = shift;
+    my $base = $self->base;
+    my @result;
+
+    if(!$self->exists($dir)){
+	return (undef); # doesn't exist, return the empty list
+    }
+    
+    $base = File::Spec->catdir($base, $dir);
+    
+    # shoudln't be using this with files; but allow anyway
+
+    if(!-d $self->exists($dir)){
+	return ($dir);
+    }
+    
+    opendir my $dh, $base or die "Failed to open directory $base: $!";
+    while(my $file = readdir $dh){
+	next if $file eq '.';
+	next if $file eq '..';
+	
+	my $full  = File::Spec->catfile($base, $file);
+	my $short;
+	if(!$dir || $dir eq '/'){
+	    $short = $file;
+	}
+	else {
+	    $short = File::Spec->catfile($dir, $file);
+	}
+	if(-d $full){
+	    push @result, $self->ls($short);
+	}
+	push @result, $short;
+    }
+    closedir $dh;
+    
+    return @result;
 }
 
 sub delete {
@@ -69,14 +187,14 @@ sub delete {
     $path = File::Spec->catdir($base, $path);
     
     die "No such file or directory $path" if(!-e $path);
+    
     if(-d _){
-	rmdir $path or die "Couldn't remove directory $path: $!";
+	return (rmdir $path or die "Couldn't remove directory $path: $!");
     }
     else {
-	unlink $path or die "Couldn't unlink $path: $!";
+	return (unlink $path or die "Couldn't unlink $path: $!");
     }
     
-    return;
 }
 
 1;
@@ -156,12 +274,47 @@ of C<@lines> separated by C<\n> characters.
 The full path of the new file is returned if the operation is
 successful, an exception is thrown otherwise.
 
+=head2 exists($file)
+
+Returns the file's real (system) path if $file exists, undefined
+otherwise.
+
+=head2 read($file)
+
+Returns the contents of $file.  In array context, returns a list of
+chompped lines.  In scalar context, returns a chomped representation
+of the entire file.
+
+=head2 write($file, @lines)
+
+Replaces the contents of file with @lines.  Each line will be ended
+with a C<\n>.  The file will be created if necessary.
+
+=head2 append($file, @lines)
+
+Appends @lines to $file, as per C<write>.
+
+=head2 prepend($file, @lines)
+
+Will implement this when Uri adds C<prepend> to
+L<File::Slurp|File::Slurp>.  (He promised!)
+
+=head2 link($from, $to)
+
+Symlinks a file in the temporary directory to another file in the
+temporary directory.
+
+=head2 ls([$path])
+
+Returns a list (in no particular order) of all files below C<$path>.
+If C<$path> is omitted, the root is assumed.
+
 =head2 delete
 
 Deletes the named file or directory.
 
-If the path is removed successfully, the method returns.  Otherwise,
-an exception is thrown.
+If the path is removed successfully, the method returns true.
+Otherwise, an exception is thrown.
 
 (Note: delete means C<unlink> for a file and C<rmdir> for a directory.
 C<delete>-ing an unempty directory is an error.)
