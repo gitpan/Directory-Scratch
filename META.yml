@@ -1,13 +1,16 @@
 # http://module-build.sourceforge.net/META-spec.html
 #XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
 name:         Directory-Scratch
-version:      0.05
+version:      0.06
 version_from: lib/Directory/Scratch.pm
 installdirs:  site
 requires:
-    File::Slurp:                   0
+    Carp:                          0
+    File::Copy:                    0
+    File::Path:                    0
     File::Spec:                    0
     File::Temp:                    0
+    Symbol:                        0
     Test::More:                    0
 
 distribution_type: module

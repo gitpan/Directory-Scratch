@@ -6,22 +6,70 @@ use warnings;
 use strict;
 use File::Temp;
 use File::Spec;
-use File::Slurp qw(read_file write_file);
+use File::Copy ();
+use File::Path ();
+use Symbol ();
 use Carp;
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 sub new {
-    my $class = shift;
+    my $this = shift;
+    my $class = ref($this) || $this;
     my $self  = {};
-    
-    my $dir = File::Temp::tempdir( CLEANUP => 1 );
-    
-    croak "Couldn't create a tempdir: $!" if !-d $dir;
-    $self->{base} = $dir;
+    my %args;
 
-    bless $self, $class;    
-    return $self;
+    if ( ref($this) && $this->isa( __PACKAGE__ ) ) {
+        # copy args from parent object
+        if ( exists $this->{parent_args} && ref $this->{parent_args} eq 'HASH' ) {
+            %args = %{ $this->{parent_args} };
+        }
+        # force the directory end up as a child of the parent, though
+        $args{DIR} = $this->base;
+    }
+    # this gets skipped if new() is called on an existing object
+    elsif ( @_ % 2 == 0 ) {
+        %args = @_;
+    }
+    
+    else {
+        croak "Invalid number of arguments to Directory::Scratch->new().";
+    }
+
+    # default CLEANUP to 1
+    if(!exists $args{CLEANUP}){
+	$args{CLEANUP} = 1;
+    }
+    
+
+    # args to new() are passed on to File::Temp::tempdir
+    # TEMPLATE is a special case, since it's positional in File::Temp
+    my @file_temp_args;
+    foreach my $arg ( keys %args ) {
+        if ( $arg eq 'TEMPLATE' ) {
+            unshift @file_temp_args, $args{$arg};
+        }
+        elsif ( $arg eq 'CLEANUP' || $arg eq 'DIR' ) {
+            push @file_temp_args, $arg, $args{$arg};
+        }
+        else {
+            croak "Invalid argument \"$arg\" to new(): only CLEANUP, DIR, and TEMPLATE are allowed."
+        }
+    }
+
+    # fix TEMPLATE to DWIM
+    if(exists $args{TEMPLATE} && !exists $args{DIR}){
+	push @file_temp_args, (TMPDIR => 1);
+    }
+
+    $self->{parent_args} = \%args;
+
+    my $base = File::Temp::tempdir( @file_temp_args );
+
+    croak "Couldn't create a tempdir: $!" unless -d $base;
+    $self->{base} = $base;
+
+    return bless $self, $class;    
 }
 
 sub base {
@@ -62,7 +110,8 @@ sub link {
     $from = File::Spec->catfile($base, $from);
     $to   = File::Spec->catfile($base, $to);
 
-    return symlink($from, $to) || croak "Couldn't link $from to $to: $!";
+    symlink($from, $to) || croak "Couldn't link $from to $to: $!";
+    return $to;
 }
 
 
@@ -88,7 +137,6 @@ sub read {
 sub write {
     my $self   = shift;
     my $file   = shift;
-    my @lines  = @_;
     my $base   = $self->base;
     
     my $_file; 
@@ -107,7 +155,7 @@ sub write {
 	$args = {append => 1};
     }
     
-    @lines = map { "$_\n" } @lines;
+    my @lines = map { $_ . $/ } @_;
     write_file($file, $args, @lines) or croak "Error writing file: $!";
 }
 
@@ -115,11 +163,80 @@ sub append {
     return &write(@_); # magic!
 }
 
+sub prepend {
+    my( $self, $file ) = splice @_, 0, 2;
+
+    my @directories = (
+        File::Spec->splitdir( $self->base ),
+        File::Spec->splitdir($file)
+    );
+    my $basename = pop @directories;
+
+
+    my $portable_path = File::Spec->catdir(@directories);
+    my $portable_file = File::Spec->catdir(@directories, $basename);
+
+    unless ( -d $portable_path ) {
+        croak "Directory::Scratch::prepend() cannot function without write access to \"$file\"'s directory ($portable_path).";
+    }
+
+    # create a temporary file in the same directory as the source file so
+    # the efficient inode update version of mv/move can be taken advantage of
+    my $tmp = File::Temp->new(
+        DIR      => $portable_path,
+        UNLINK   => 0 # manual unlink in case something goes awry
+    );
+
+    my @tmpfile_spec = File::Spec->splitdir( $tmp->filename );
+    my $tmpfile = File::Spec->catdir( @tmpfile_spec );
+
+    File::Copy::move( $portable_file, $tmpfile )
+        || croak "Could not temporarily relocate file '$file' to '$tmpfile': $!";
+
+    # catch exceptions then throw another one with an additional message
+    eval {
+        write_file( $portable_file, {}, @_ );
+    };
+    if ( $@ ) {
+        croak "$@\nThe original file is probably still available in '$tmpfile'";
+    }
+
+    # gonna do a size check after all the appending is complete
+    my $original_size = -s $tmpfile;
+    my $append_size   = -s $portable_file;
+
+    # now copy one file into the other line-by-line
+    open( my $input, "< $tmpfile" )
+        || croak "Could not open '$tmpfile' (your original file) for reading: $!";
+    open( my $output, ">> $portable_file" )
+        || croak "Could not open '$portable_file' for appending data from '$tmpfile': $!";
+    while ( <$input> ) {
+        print $output $_;
+    }
+    close( $output );
+    close( $input );
+
+    # almost, but not quite, entirely portable size comparison
+    my $result = undef;
+    my $new_size = -s $portable_file;
+    my $exp_size = $original_size + $append_size;
+    if ( $new_size == $exp_size ) {
+        $result = 1;
+    }
+    else {
+        croak "The new file's size did not match the expected size ($exp_size).\n" .
+              "  * original file (size: $original_size): $tmpfile\n" .
+              "  * prepended file (size: $new_size): $portable_file";
+    }
+
+    unlink $tmpfile;
+    return $result;
+}
+
 sub touch {
     my $self = shift;
     my $file = shift;
     my $base = $self->base;
-    my @lines= @_;
     
     # create parent dir
     my @directories = File::Spec->splitdir($file);
@@ -130,11 +247,26 @@ sub touch {
     
     my $path = File::Spec->catfile($base, $file);
 
-    open(my $fh, '>', $path) or croak "Failed to open $path: $!";
-    map {print {$fh} "$_\n"  or croak "Write error: $!"} @lines if @lines;
-    close($fh)               or croak "Failed to close $path: $!";
-    
+    open(my $fh, '>', $path)
+        or croak "Failed to open $path: $!";
+
+    my (undef, undef, undef, $method) = caller(1);
+    if ( $method && $method eq 'Directory::Scratch::openfile' ) {
+        return $fh;
+    }
+
+    # no need to copy @_, just use it directly for aliasing goodness
+    if ( @_ > 0 ) {
+        map {
+            print {$fh} $_, $/ or croak "Write error: $!"
+        } @_;
+        close($fh) or croak "Failed to close $path: $!";
+    }
     return $path;
+}
+
+sub openfile {
+    return &touch(@_);
 }
 
 sub ls {
@@ -143,8 +275,10 @@ sub ls {
     my $base = $self->base;
     my @result;
 
+    $dir ||= ''; # silences a lot of warnings in File::Spec
+
     if(!$self->exists($dir)){
-	return (undef); # doesn't exist, return the empty list
+	return (); # doesn't exist, return the empty list
     }
     
     $base = File::Spec->catdir($base, $dir);
@@ -196,7 +330,95 @@ sub delete {
     
 }
 
+sub cleanup {
+    my $self = shift;
+    my $base = $self->{base};
+
+    # see File::Path
+    my @errors;
+    local $SIG{__WARN__} = sub {
+        push @errors, [ @_ ];
+    };
+
+    File::Path::rmtree( $base, 0, 1 );
+
+    if ( @errors > 0 ) {
+        croak "cleanup() method failed: $!\n@errors";
+    }
+
+    $self->{called_cleanup} = 1;
+}
+
+# think of these as File::Slurp::Lite
+# it happens to use Perl's buffered IO while IO::Slurp uses sys*
+sub read_file {
+    my $file = shift;
+    my( $buffer, @buffer );
+
+    open( my $fh, "< $file" )
+        || croak "Could not open '$file' for reading: $!";
+
+    if ( wantarray ) {
+        @buffer = <$fh>;
+    }
+    else {
+        local $/ = undef;
+        $buffer = <$fh>;
+    }
+
+    close( $fh );
+
+    return wantarray ? @buffer : $buffer;
+}
+
+sub write_file {
+    my( $file, $args ) = splice @_, 0, 2;
+    my $fh = Symbol::gensym;
+
+    if ( $args->{append} ) {
+        open( $fh, ">> $file" )
+            || croak "Could not open '$file' for appending: $!";
+    }
+    else {
+        open( $fh, "> $file" )
+            || croak "Could not open '$file' for writing: $!";
+    }
+
+    if ( $args->{'binmode'} ) {
+        binmode($fh);
+    }
+
+    my $list = \@_;
+
+    if ( ref $_[0] eq 'ARRAY' ) {
+        $list = $_[0];
+    }
+
+    if ( @$list == 1 || $args->{'binmode'} ) {
+        print $fh @$list;
+    }
+    else {
+        foreach ( @$list ) {
+            chomp;
+            print $fh $_, $/;
+        }
+    }
+    close $fh;
+}
+
+# throw a warning if CLEANUP is off and cleanup hasn't been called
+sub DESTROY {
+    my $self = shift;
+    if ( $self->{args} && exists $self->{args}{CLEANUP} ) {
+        carp "Not cleaning up files in $self->{base}."
+            unless ( $self->{args}{CLEANUP} || $self->{called_cleanup} );
+    }
+    
+    unlink $self->base;
+}
+
 1;
+
 __END__
 
 =head1 NAME
@@ -205,7 +427,7 @@ Directory::Scratch - Easy-to-use self-cleaning scratch space.
 
 =head1 VERSION
 
-Version 0.02
+Version 0.06
 
 =cut
 
@@ -214,9 +436,10 @@ Version 0.02
 When writing test suites for modules that operate on files, it's often
 inconvenient to correctly create a platform-independent temporary
 storage space, manipulate files inside it, then clean it up when the
-test exits.
+test exits.  The inconvenience usually results in tests that don't work
+everwhere, or worse, no tests at all.
 
-This module aims to eliminate the problem by making it easy to do
+This module aims to eliminate that problem by making it easy to do
 things right.
 
 Example:
@@ -251,6 +474,22 @@ Creates a new temporary directory (via File::Temp and its defaults).
 When the object returned by this method goes out of scope, the
 directory and its contents are removed.
 
+new() may also be called on an existing object to create another scratch
+handle as a child.
+
+    my $temp = Directory::Scratch->new;
+    my $another = $temp->new(); # will be under $temp
+
+    # some File::Temp arguments get passed through (may be less portable)
+    my $temp = Directory::Scratch->new(
+        DIR => '/var/tmp', # be specific about where your files go
+        CLEANUP => 0,      # turn off automatic cleanup
+        TEMPLATE => 'ScratchDirXXXX' # specify a template for the dirname
+    );
+
+If C<DIR>, C<CLEANUP>, or C<TEMPLATE> are omitted, reasonable defaults
+are selected.  C<CLEANUP> is on by default, and C<DIR> is set to C<File::Spec->tmpdir>;
+
 =head2 base
 
 Returns the full path of the temporary directory.
@@ -272,6 +511,11 @@ of C<@lines> separated by C<\n> characters.
 
 The full path of the new file is returned if the operation is
 successful, an exception is thrown otherwise.
+
+=head2 openfile($filename)
+
+Just like touch(), only it doesn't take any data and returns a filehandle
+instead of the file path.   It's up to you to take care of flushing/closing.
 
 =head2 exists($file)
 
@@ -295,8 +539,8 @@ Appends @lines to $file, as per C<write>.
 
 =head2 prepend($file, @lines)
 
-Will implement this when Uri adds C<prepend> to
-L<File::Slurp|File::Slurp>.  (He promised!)
+Backs up $file, writes the @lines to its original name, then appends
+the original file to that.
 
 =head2 link($from, $to)
 
@@ -317,6 +561,20 @@ Otherwise, an exception is thrown.
 
 (Note: delete means C<unlink> for a file and C<rmdir> for a directory.
 C<delete>-ing an unempty directory is an error.)
+
+=head2 cleanup
+
+Forces an immediate cleanup of the current object's directory.   See File::Path's
+rmtree().
+
+=head2 read_file [INTERNAL]
+
+A tiny implementation similar to IO::Slurp's read_file, but lighter and doesn't
+use sysread().
+
+=head2 write_file [INTERNAL]
+
+Ditto.
 
 =head1 RATIONALE 
 
@@ -357,15 +615,18 @@ Portable.  Readable.  Clean.
 
 Ahh, much better.
 
-=head1 TODO
-
-Methods like C<cat> and C<ls> might make sense.  If you need them,
-I'll add them for you.  Just send me an e-mail or open a problem
-ticket on CPAN's RT.  (Link below.)
-
 =head1 PATCHES
 
-Commentary, patches, etc. are of course welcome, as well.
+Commentary, patches, etc. are of course welcome, as well.  If you send a patch,
+try patching the subversion version available from:
+
+L<https://svn.jrock.us/cpan_modules/Directory-Scratch>
+
+=head1 SEE ALSO
+
+ File::Temp
+ File::Path
+ File::Spec
 
 =head1 BUGS
 
@@ -399,6 +660,10 @@ L<http://rt.cpan.org/NoAuth/Bugs.html?Dist=Directory-Scratch>
 L<http://search.cpan.org/dist/Directory-Scratch>
 
 =back
+
+=head1 ACKNOWLEDGEMENTS
+
+Thanks to Al Tobey (TOBEYA) for some excellent patches.
 
 =head1 COPYRIGHT & LICENSE
 
