@@ -6,7 +6,7 @@ use strict;
 use warnings;
 use Test::More tests=>17;
 use Directory::Scratch;
-use File::Spec;
+use Path::Class;
 
 my @files = qw(foo bar baz);
 my @dirs  = qw(1 2 3);
@@ -19,7 +19,7 @@ foreach my $dir (@dirs){
     ok($tmp, "mkdir $dir");
     push @list, $dir;
     foreach my $file (@files){
-	my $name = File::Spec->catdir($dir, $file);
+	my $name = file($dir, $file);
 	$tmp = $t->touch($name); 
 	ok($tmp, "touch $tmp");
 	push @list, $name;
@@ -34,13 +34,13 @@ my @result = $t->ls;
 
 is_deeply(\@result, \@list, "listed everything");
 
-@result = $t->ls('/');
+@result = $t->ls;
 @result = sort @result;
 is_deeply(\@result, \@list, "listed everything (with /)");
 
 @result = sort $t->ls('1');
 
-my @possible = map {File::Spec->catfile("1", $_)} qw(bar baz foo);
+my @possible = map {file('1', $_)} qw(bar baz foo);
 
 is_deeply(\@result, \@possible, 'listed 1');
 

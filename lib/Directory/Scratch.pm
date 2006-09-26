@@ -4,100 +4,145 @@ package Directory::Scratch;
 
 use warnings;
 use strict;
-
 use Carp;
 use File::Temp;
-use File::Spec;
 use File::Copy;
-use File::Path;
+use Path::Class qw(dir file);
+use File::Slurp qw(read_file write_file);
+use File::Spec;
+
+my ($our_platform) = $File::Spec::ISA[0] =~ /::(\w+)$/;
+my $platform = 'Unix';
 use Scalar::Util qw(blessed);
 
-use overload '""' => \&base,
+use overload q{""} => \&base,
   fallback => "yes, fallback";
 
-our $VERSION = '0.08';
 
+our $VERSION = '0.09';
+
+# allow the user to specify which OS's semantics he wants to use
+# if platform is undef, then we won't do any translation at all
+sub import {
+    my $class = shift;
+    return unless @_;
+    $platform = shift;
+    eval("require File::Spec::$platform") if $platform;
+    croak "Don't know how to deal with platform '$platform'" if $@;
+    return $platform;
+}
+
+# create an instance
 sub new {
     my $class = shift;
-    my $self  ={};
+    my $self  = {};
     my %args;
 
-    eval {
-	%args = @_;
-    };
-    if($@){
-        croak "Invalid number of arguments to Directory::Scratch->new().";
-    }
+    eval { %args = @_ };
+    croak 'Invalid number of arguments to Directory::Scratch->new' if $@;
     
     # explicitly default CLEANUP to 1
-    if(!exists $args{CLEANUP}){
-	$args{CLEANUP} = 1;
-    }
+    $args{CLEANUP} = 1 unless exists $args{CLEANUP};
     
-    # args to new() are passed on to File::Temp::tempdir
     # TEMPLATE is a special case, since it's positional in File::Temp
     my @file_temp_args;
-    foreach my $arg ( keys %args ) {
-        if ( $arg eq 'TEMPLATE' ) {
-            unshift @file_temp_args, $args{TEMPLATE};
-        }
-        elsif ( $arg eq 'CLEANUP' || $arg eq 'DIR' ) {
-            push @file_temp_args, $arg, $args{$arg};
-        }
-        else {
-            croak qq{Invalid argument "$arg" to Directory::Scratch->new(): }.
-		   q{only CLEANUP, DIR, and TEMPLATE are allowed.};
-        }
+
+    # convert DIR from their format to a Path::Class
+    $args{DIR} = Path::Class::foreign_dir($platform, $args{DIR}) if $args{DIR};
+    
+    # change our arg format to one that File::Temp::tempdir understands
+    for(qw(CLEANUP DIR)){
+	push @file_temp_args, ($_ => $args{$_}) if $args{$_};
     }
+    
+    # this is a positional argument, not a named argument
+    unshift @file_temp_args, $args{TEMPLATE} if $args{TEMPLATE};
+    
+    # fix TEMPLATE to do what we mean; if TEMPLATE is set then TMPDIR
+    # needs to be set also
+    push @file_temp_args, (TMPDIR => 1) if($args{TEMPLATE} && !$args{DIR});
+    
+    # keep this around for C<child>
+    $self->{args} = \%args;
 
-    # fix TEMPLATE to DWIM
-    if(exists $args{TEMPLATE} && !exists $args{DIR}){
-	push @file_temp_args, (TMPDIR => 1);
-    }
-
-    $self->{_parent_args} = \%args;
-
-    my $base = File::Temp::tempdir( @file_temp_args );
-
+    # create the directory!
+    my $base = dir(File::Temp::tempdir(@file_temp_args));
     croak "Couldn't create a tempdir: $!" unless -d $base;
     $self->{base} = $base;
 
-    return bless $self, $class;    
+    bless $self, $class;    
+    $self->platform($platform || $args{platform}); # set platform for this instance
+    return $self;
 }
 
 sub child {
-    my $this = shift;
-    my $self;
+    my $self = shift;
     my %args;
-
-    if ( blessed $this && $this->isa( __PACKAGE__ ) ) {
-        # copy args from parent object
-        if ( exists $this->{_parent_args} && ref $this->{_parent_args} eq 'HASH' ) {
-            %args = %{ $this->{_parent_args} };
-        }
-
-        # force the directory end up as a child of the parent, though
-        $args{DIR} = $this->base;
-	
-	$self = Directory::Scratch->new(%args);
-    }
-    else {
-	croak "Invalid reference passed to Directory::Scratch->child";
-    }
     
-    return $self;
+    croak 'Invalid reference passed to Directory::Scratch->child'
+      if !blessed $self || !$self->isa(__PACKAGE__);
+    
+    # copy args from parent object
+    %args = %{$self->{_args}} if exists $self->{_args};
+    
+    # force the directory end up as a child of the parent, though
+    $args{DIR} = $self->base->stringify;
+    
+    return Directory::Scratch->new(%args);
 }
 
 sub base {
     my $self = shift;
-    return $self->{base};
+    return $self->{base};#->stringify;
+}
+
+sub platform {
+    my $self = shift;
+    my $desired = shift;
+
+    if($desired){
+	eval "require File::Spec::$desired";
+	croak "Unknown platform '$desired'" if $@;
+	$self->{platform} = $desired;
+    }
+    
+    return $self->{platform};
+}
+
+# make Path::Class's foreign_* respect the instance's desired platform
+sub _foreign_file {
+    my $self = shift;
+    my $platform = $self->platform;
+
+    if($platform){
+	use YAML;
+	my $file = Path::Class::foreign_file($platform, @_);
+	return $file->as_foreign($our_platform);
+    }
+    else {
+	return Path::Class::file(@_);
+    }
+}
+
+sub _foreign_dir {
+    my $self = shift;
+    my $platform = $self->platform;
+
+    if($platform){
+	my $dir = Path::Class::foreign_dir($platform, @_);
+	return $dir->as_foreign($our_platform);
+    }
+    else {
+	return Path::Class::dir(@_);
+    }
 }
 
 sub exists {
     my $self = shift;
     my $file = shift;
     my $base = $self->base;
-    my $path = File::Spec->catfile($base, $file);
+    my $path = $self->_foreign_file($base, $file);
+    return dir($path) if -d $path;
     return $path if -e $path;
     return; # undef otherwise
 }
@@ -106,15 +151,10 @@ sub mkdir {
     my $self = shift;
     my $dir  = shift;
     my $base = $self->base;
-
-    my @directories = File::Spec->splitdir($dir);
-    foreach my $directory (@directories){
-	$base = File::Spec->catdir($base, $directory);
-	mkdir $base;
-	croak "Failed to create $base: $!" if !-d $base;
-    }
-    
-    return $base;
+    $dir = $self->_foreign_dir($base, $dir);
+    $dir->mkpath;
+    return $dir if (-e $dir && -d $dir);
+    croak "Error creating $dir: $!";
 }
 
 sub link {
@@ -122,13 +162,16 @@ sub link {
     my $from = shift;
     my $to   = shift;
     my $base = $self->base;
-    
-    $from = File::Spec->catfile($base, $from);
-    $to   = File::Spec->catfile($base, $to);
+
+    croak "Symlinks are not supported on MSWin32" 
+      if $^O eq 'MSWin32';
+
+    $from = $self->_foreign_file($base, $from);
+    $to   = $self->_foreign_file($base, $to);
 
     symlink($from, $to) 
       or croak "Couldn't link $from to $to: $!";
-
+    
     return $to;
 }
 
@@ -138,210 +181,149 @@ sub read {
     my $file = shift;
     my $base = $self->base;
     
-    $file = File::Spec->catfile($base, $file);
+    $file = $self->_foreign_file($base, $file);
     
     if(wantarray){
-	my @lines = read_file($file);
+	my @lines = read_file($file->stringify);
 	chomp @lines;
 	return @lines;
     }
     else {
-	my $scalar = read_file($file);
+	my $scalar = read_file($file->stringify);
 	chomp $scalar;
 	return $scalar;
     }
 }
 
 sub write {
-    my $self   = shift;
-    my $file   = shift;
-    my $base   = $self->base;
+    my $self = shift;
+    my $file = shift;
+    my $base = $self->base;
     
-    my $_file; 
-    if(!($_file = $self->exists($file))){
-	$file = $self->touch($file); # creates parent directories
-    }
-    else {
-	$file = $_file;
-    }
+    my $path = $self->_foreign_file($base, $file);
+    $path->parent->mkpath;
+    croak "Couldn't create parent dir ". $path->parent. ": $!"
+      unless -e $path->parent;
     
-    my $args = {};
-
+    # figure out if we're "write" or "append"
     my (undef, undef, undef, $method) = caller(1);
-    
+
+    my $args;
     if(defined $method && $method eq 'Directory::Scratch::append'){
-	$args = {append => 1};
+	$args->{append} = 1;
+	write_file($path->stringify, $args, map { $_. ($, || "\n") } @_) 
+	  or croak "Error writing file: $!";
     }
-    
-    my @lines = map { $_ . $/ } @_;
-    write_file($file, $args, @lines) or croak "Error writing file: $!";
+    else { # (cut'n'paste)++
+	write_file($path->stringify, map { $_. ($, || "\n") } @_) 
+	  or croak "Error writing file: $!";
+    }
+    return 1;
 }
 
 sub append {
     return &write(@_); # magic!
 }
 
-sub prepend {
-    my( $self, $file ) = splice @_, 0, 2;
-
-    my @directories = (
-        File::Spec->splitdir( $self->base ),
-        File::Spec->splitdir($file)
-    );
-    my $basename = pop @directories;
-
-
-    my $portable_path = File::Spec->catdir(@directories);
-    my $portable_file = File::Spec->catdir(@directories, $basename);
-
-    unless ( -d $portable_path ) {
-        croak  q{prepend() cannot function without write access to}.
-	      qq{"$file"'s directory ($portable_path).};#'
-    }
-
-    # create a temporary file in the same directory as the source file so
-    # the efficient inode update version of mv/move can be taken advantage of
-    my $tmp = File::Temp->new(
-        DIR      => $portable_path,
-        UNLINK   => 0 # manual unlink in case something goes awry
-    );
-
-    my @tmpfile_spec = File::Spec->splitdir( $tmp->filename );
-    my $tmpfile      = File::Spec->catdir( @tmpfile_spec );
-
-    File::Copy::move( $portable_file, $tmpfile )
-        || croak "Could not temporarily relocate file '$file' to '$tmpfile': $!";
-
-    # catch exceptions then throw another one with an additional message
-    eval {
-        write_file( $portable_file, {}, @_ );
-    };
-    if ( $@ ) {
-        croak "$@\nThe original file is probably still available in '$tmpfile'";
-    }
-
-    # gonna do a size check after all the appending is complete
-    my $original_size = -s $tmpfile;
-    my $append_size   = -s $portable_file;
-
-    # now copy one file into the other line-by-line
-    open(my $input, '<', $tmpfile)
-        or croak "Could not open '$tmpfile' (your original file) for reading: $!";
-    open( my $output, '>>', $portable_file)
-        or croak "Could not open '$portable_file' for appending data from '$tmpfile': $!";
-
-    while ( <$input> ) {
-        print $output $_;
-    }
-    close( $output );
-    close( $input );
-
-    # almost, but not quite, entirely portable size comparison
-    my $result = undef;
-    my $new_size = -s $portable_file;
-    my $exp_size = $original_size + $append_size;
-    if ( $new_size == $exp_size ) {
-        $result = 1;
-    }
-    else {
-        croak "The new file's size did not match the expected size ($exp_size).\n" .
-              "  * original file (size: $original_size): $tmpfile\n" .
-              "  * prepended file (size: $new_size): $portable_file";
-    }
-
-    unlink $tmpfile;
-    return $result;
-}
-
 sub tempfile {
     my $self = shift;
     my $path = shift;
+
     if(!defined $path){
 	$path = $self->base;
     }
     else {
-	$path = File::Spec->catfile($self->base, $path);
+	$path = $self->_foreign_dir($self->base, $path);
     }
     
-    return File::Temp::tempfile( DIR => $path );
+    my ($fh, $filename) =  File::Temp::tempfile( DIR => $path );
+    $filename = file($filename); # "class"ify the file
+    if(wantarray){
+	return ($fh, $filename);
+    }
+    
+    # XXX: I don't know why you would want to do this...
+    return $fh;
+}
+
+sub openfile {
+    my $self = shift;
+    my $file = shift;
+    my $base = $self->base;
+
+    my $path = $self->_foreign_file($base, $file);
+    $path->dir->mkpath;
+    croak 'Parent directory '. $path->dir. 
+      ' does not exist, and could not be created' 
+	unless -d $path->dir;
+    open(my $fh, '+>', $path) or croak "Failed to open $path: $!"; 
+    return ($fh, $path) if(wantarray);
+    return $fh;
 }
 
 sub touch {
     my $self = shift;
     my $file = shift;
-    my $base = $self->base;
     
-    # create parent dir
-    my @directories = File::Spec->splitdir($file);
-    pop @directories; # pop off filename
-
-    my $parents = File::Spec->catdir(@directories);
-    $self->mkdir($parents) if $parents;
+    local $, = $, || "\n"; 
+    my ($fh, $path) = $self->openfile($file);
     
-    my $path = File::Spec->catfile($base, $file);
-
-    open(my $fh, '>', $path)
-        or croak "Failed to open $path: $!";
-
-    # behave differently when called as openfile()
-    my (undef, undef, undef, $method) = caller(1);
-    if ( $method && $method eq 'Directory::Scratch::openfile' ) {
-        return $fh;
-    }
-
-    # no need to copy @_, just use it directly for aliasing goodness
-    if ( @_ > 0 ) {
-        map {
-            print {$fh} $_, $/ or croak "Write error: $!"
-        } @_;
-        close($fh) or croak "Failed to close $path: $!";
-    }
+    write_file($fh, map { $_. ($, || "\n") } @_) 
+      or croak "Write error to $path: $!";
     return $path;
 }
 
-sub openfile {
-    return &touch(@_); # more trickery.
-}
 
 sub ls {
     my $self = shift;
     my $dir = shift;
     my $base = $self->base;
+
     my @result;
-
-    $dir ||= ''; # silences a lot of warnings in File::Spec
-
-    if(!$self->exists($dir)){
-	return (); # doesn't exist, return the empty list
+    my $path;
+    
+    if($dir){
+	$dir = $self->_foreign_dir($dir); 
+	$path = $self->exists($dir);    
+	return () if !$path;
+	return (file($dir)) if !-d $path;
+	$path = dir($base, $dir);
+    }
+    else {
+	$path = dir($base);
     }
     
-    $base = File::Spec->catdir($base, $dir);
-    
-    # shoudln't be using this with files; but allow anyway
-    if(!-d $self->exists($dir)){
-	return ($dir);
-    }
-    
-    opendir my $dh, $base or croak "Failed to open directory $base: $!";
+    opendir my $dh, $path or croak "Failed to open directory $base: $!";
     while(my $file = readdir $dh){
 	next if $file eq '.';
 	next if $file eq '..';
-	
-	my $full  = File::Spec->catfile($base, $file);
+
+	my $full;
 	my $short;
-	if(!$dir || $dir eq '/'){
-	    $short = $file;
+	if($dir){
+	    $short = file($dir, $file);
+	    $full  = file($base, $dir, $file);
 	}
 	else {
-	    $short = File::Spec->catfile($dir, $file);
+	    $short = file($file);
+	    $full  = file($base, $file);
 	}
-	if(-d $full){
+	
+	$short = $file if(!$dir || $dir eq '/');
+
+	#print {*STDERR} "[$base][$file: $short -> $full]\n";
+	
+	if(-d $full){ #push child elements on
+	    #print {*STDERR} "RECURSE -->\n";
 	    push @result, $self->ls($short);
+	    #print {*STDERR} "<-- RECURSE\n";
+	    push @result, dir($short); # push ourselves on 
 	}
-	push @result, $short;
+	else {
+	    push @result, file($short);
+	}
     }
     closedir $dh;
-    
     return @result;
 }
 
@@ -350,7 +332,7 @@ sub delete {
     my $path = shift;
     my $base = $self->base;
 
-    $path = File::Spec->catdir($base, $path);
+    $path = $self->_foreign_file($base, $path);
     
     croak "No such file or directory '$path'" if !-e $path;
     
@@ -365,163 +347,61 @@ sub delete {
 
 sub cleanup {
     my $self = shift;
-    my $base = $self->{base};
-
-    # see File::Path
+    my $base = $self->base;
+    
+    # capture warnings
     my @errors;
     local $SIG{__WARN__} = sub {
-        push @errors, [ @_ ];
+        push @errors, @_;
     };
-
-    File::Path::rmtree( $base );
+    
+    File::Path::rmtree( $base->stringify );
 
     if ( @errors > 0 ) {
         croak "cleanup() method failed: $!\n@errors";
     }
 
+    $self->{args}->{CLEANUP} = 1; # it happened, so update this
     return 1;
 }
-
-# randfile() needs to remember if it has loaded String::Random
-# and whether or not it succeeded between calls
 
 sub randfile {
     my $self = shift;
 
+    # make sure we can do this
+    eval {
+	require String::Random;
+    };
+    croak 'randfile: String::Random is required' if $@;
+
+    # setup some defaults
     my( $min, $max ) = ( 1024, 131072 );
+
     if ( @_ == 2 ) {
-        ($min, $max) = @_;
+	($min, $max) = @_;
     }
     elsif ( @_ == 1 ) {
         $max = $_[0];
         $min = int(rand($max)) if ( $min > $max );
     }
-
-    confess "Cannot request a maximum length < 128 with randfile()."
-        if ( $max < 1 );
-
-    my( $fh, $name ) = $self->tempfile;
-
-    eval {
-    # allow tests to control loading of String::Random so both
-    # methods can be tested
-	croak "skipping load of String::Random"
-        if exists $self->{skip_string_random};
-	require String::Random;
-    };
-
-    # string::random was required OK
-    if ( !$@ ) {
-        my $rand = String::Random->new();
-        print {$fh} $rand->randregex( ".{$min,$max}" );
-    }
+    confess "randfile: Cannot request a maximum length < 1"
+      if ( $max < 1 );
     
-    # apparently we don't have string::random
-    else {
-        # cheesy approach
-        my $target_len = $max;
-        if ( $min != $max ) {
-            $target_len = rand($max);
-            while ( $target_len < $min || $target_len > $max ) {
-                $target_len = rand($max)
-            }
-        }
-        my $length = 0;
-        while ( $length < $target_len ) {
-            my $str = rand() . $/;
-            $length += length($str);
-
-            if ( $length > $max ) {
-                my $chop = $length - $max;
-                substr $str, 0, $chop, '';
-            }
-            print {$fh} $str;
-        }
-    }
-    close($fh);
+    my ($fh, $name) = $self->tempfile;
+    croak "Could not open $name: $!" if !$fh;
+    $name = file($name);
     
-    return $name;
-}
-
-# think of these as File::Slurp::Lite
-# it happens to use Perl's buffered IO while IO::Slurp uses sys*
-sub read_file {
-    my $file = shift;
-    my $args = shift;
-
-    my $binmode = $args->{binmode};
-
-    my( $buffer, @buffer );
-
-    open my $fh, '<', $file
-      or croak "Could not open '$file' for reading: $!";
-
-    if($binmode){
-	binmode $fh, $binmode 
-	  or croak "Could not set binmode $binmode on '$file': $!";
-    }
-
-    if (wantarray) {
-        @buffer = <$fh>;
-    }
-    else {
-        $buffer = do { local $/; <$fh> };
-    }
-    close( $fh );
-
-    return wantarray ? @buffer : $buffer;
-}
-
-sub write_file {
-    my $file = shift;
-    my $args = shift;
+    my $rand = String::Random->new();
+    write_file($fh, $rand->randregex(".{$min,$max}"));    
     
-    my $fh;
-    my $append  = $args->{append};
-    my $binmode = $args->{binmode};
-    
-    if ($append) {
-        open $fh, '>>', $file
-	  or croak "Could not open '$file' for appending: $!";
-    }
-    else {
-        open $fh, '>', $file
-	  or croak "Could not open '$file' for writing: $!";
-    }
-    
-    if ($binmode) {
-        binmode $fh, $binmode
-	  or croak "Could not set binmode $binmode on $file: $!";
-    }
-    
-    my $list = \@_;
-
-    if ( ref $_[0] eq 'ARRAY' ) {
-        $list = $_[0];
-    }
-
-    if ($binmode) {
-	# no output record separator
-        print {$fh} @$list;
-    }
-    else {
-        foreach ( @$list ) {
-            chomp;
-            print {$fh} "$_$/" or croak "write error: $!";
-        }
-    }
-    close $fh;
+    return file($name);
 }
 
 # throw a warning if CLEANUP is off and cleanup hasn't been called
 sub DESTROY {
     my $self = shift;
-    if ( $self->{args} && exists $self->{args}{CLEANUP} ) {
-        carp "Not cleaning up files in $self->{base}."
-            unless ( $self->{args}{CLEANUP} || $self->{called_cleanup} );
-    }
-    
-    unlink $self->base;
+    carp "Warning: not cleaning up files in ". $self->base
+      if !$self->{args}->{CLEANUP};
 }
 
 1;
@@ -531,12 +411,6 @@ __END__
 =head1 NAME
 
 Directory::Scratch - Easy-to-use self-cleaning scratch space.
-
-=head1 VERSION
-
-Version 0.07_03
-
-=cut
 
 =head1 SYNOPSIS
 
@@ -570,6 +444,45 @@ Example:
     $temp->touch('foo');
     ok(-e "$temp/foo");  # /tmp/xYz837/foo should exist 
 
+=head1 EXPORT
+
+The first argument to the module is optional, but if specified, it's
+interperted as the name of the OS whose file naming semantics you want
+to use with Directory::Scratch.  For example, if you choose "Unix",
+then you can provide paths to Directory::Scratch in UNIX-form
+('foo/bar/baz') on any platform.  Unix is the default if you don't
+choose anything explicitly.
+
+If you want to use the local platform's flavor (not recommended),
+specify an empty import list:
+
+    use Directory::Scratch ''; # use local path flavor
+
+Recognized platforms (from L<File::Spec|File::Spec>):
+
+=over 4
+
+=item Mac
+
+=item UNIX
+
+=item Win32
+
+=item VMS
+
+=item OS2
+
+=back
+
+The names are case sensitive, since they simply specify which
+C<File::Spec::> module to use when splitting the path.
+
+=head2 EXAMPLE
+
+    use Directory::Scratch 'Win32';
+    my $tmp = Directory::Scratch->new();
+    $tmp->touch("foo\\bar\\baz"); # and so on
+
 =head1 METHODS
 
 The file arguments to these methods are always relative to the
@@ -577,7 +490,16 @@ temporary directory.  If you specify C<touch('/etc/passwd')>, then a
 file called C</tmp/whatever/etc/passwd> will be created instead.
 
 This means that the program's PWD is ignored (for these methods), and
-that a leading C</> on the filename is meaningless.
+that a leading C</> on the filename is meaningless (and will cause
+portability problems).
+
+Finally, whenever a filename or path is returned, it is a
+L<Path::Class|Path::Class> object rather than a string containing the
+filename.  Usually, this object will act just like the string, but to
+be extra-safe, call C<< $path->stringify >> to ensure that you're
+really getting a string.  (Some clever modules try to determine
+whether a variable is a filename or a filehandle; these modules
+usually guess wrong when confronted with a C<Path::Class> object.)
 
 =head2 new
 
@@ -606,9 +528,37 @@ instance.  Returns a C<Directory::Scratch> object.
 
 =head2 base
 
-Returns the full path of the temporary directory.
+Returns the full path of the temporary directory, as a Path::Class
+object.
 
-=head2 mkdir
+=head2 platform([$platform])
+
+Returns the name of the platform that the filenames are being
+interperted as (i.e., "Win32" means that this module expects paths
+like C<\foo\bar>, whereas "UNIX" means it expects C</foo/bar>).
+
+If $platform is sepcified, the platform is changed to the passed
+value.  (Overrides the platform specified at module C<use> time, for
+I<this instance> only, not every C<Directory::Scratch> object.)
+
+=head2 touch($filename, [@lines])
+
+Creates a file named C<$filename>, optionally containing the elements
+of C<@lines> separated by the output record separator C<$\>.
+
+The Path::Class object representing the new file is returned if the
+operation is successful, an exception is thrown otherwise.
+
+=head2 openfile($filename)
+
+Opens $filename for writing and reading (C<< +> >>), and returns the
+filehandle.  If $filename already exists, it will be truncated.  It's
+up to you to take care of flushing/closing.
+
+In list context, returns both the filehandle and the filename C<($fh,
+$path)>.
+
+=head2 mkdir($directory)
 
 Creates a directory (and its parents, if necessary) inside the
 temporary directory and returns its name.  Any leading C</> on the
@@ -627,23 +577,23 @@ See L<File::Temp::tempfile|File::Temp/FUNCTIONS/tempfile>.
 
     my($fh,$name) = $scratch->tempfile;
 
-=head2 touch($filename, [@lines])
-
-Creates a file named C<$filename>, optionally containing the elements
-of C<@lines> separated by C<\n> characters.  
-
-The full path of the new file is returned if the operation is
-successful, an exception is thrown otherwise.
-
-=head2 openfile($filename)
-
-Just like touch(), only it doesn't take any data and returns a filehandle
-instead of the file path.   It's up to you to take care of flushing/closing.
-
 =head2 exists($file)
 
 Returns the file's real (system) path if $file exists, undefined
 otherwise.
+
+Example:
+
+    my $path = $tmp->exists($file);
+    if(defined $path){
+       say "Looks like you have a file at $path!";
+       open(my $fh, '>>', $path) or die $!;
+       print {$fh} "add another line\n";
+       close $fh or die $!;
+    }
+    else {
+       say "No file called $file."
+    }
 
 =head2 read($file)
 
@@ -654,45 +604,43 @@ of the entire file.
 =head2 write($file, @lines)
 
 Replaces the contents of file with @lines.  Each line will be ended
-with a C<\n>.  The file will be created if necessary.
+with a C<\n>, or C<$,> if it is defined.  The file will be created if
+necessary.
 
 =head2 append($file, @lines)
 
 Appends @lines to $file, as per C<write>.
 
-=head2 prepend($file, @lines)
-
-Backs up $file, writes the @lines to its original name, then appends
-the original file to that.
-
 =head2 randfile()
 
 Generates a file with random string data in it.   If String::Random is
-available, it will be used to generate the file's data.   If it's not, a very
-simplistic builtin generator is used (calls rand() a lot of times).   Takes 0,
+available, it will be used to generate the file's data.  Takes 0,
 1, or 2 arguments - default size, max size, or size range.
 
 A max size of 0 will cause an exception to be thrown.
 
+Examples:
+
     my $file = $temp->randfile(); # size is between 1024 and 131072
     my $file = $temp->randfile( 4192 ); # size is below 4129
-
-    # big files are probably very slow
-    my $file = $temp->randfile( 1000000, 4000000 ); # between 1000000 and 4000000
+    my $file = $temp->randfile( 1000000, 4000000 ); 
 
 =head2 link($from, $to)
 
 Symlinks a file in the temporary directory to another file in the
 temporary directory.
 
+Note: symlinks are not supported on Win32.  Portable code must not use
+this method.  (The method will C<croak> if it won't work.)
+
 =head2 ls([$path])
 
 Returns a list (in no particular order) of all files below C<$path>.
 If C<$path> is omitted, the root is assumed.
 
-=head2 delete
+=head2 delete($path)
 
-Deletes the named file or directory.
+Deletes the named file or directory at $path.
 
 If the path is removed successfully, the method returns true.
 Otherwise, an exception is thrown.
@@ -702,18 +650,9 @@ C<delete>-ing an unempty directory is an error.)
 
 =head2 cleanup
 
-Forces an immediate cleanup of the current object's directory.   See File::Path's
-rmtree().
-
-=head2 read_file($path, \%args) [INTERNAL]
-
-A tiny implementation similar to IO::Slurp's read_file, but lighter
-and doesn't use sysread().  Accepts "binmode" as an argument, to set a
-binmode on the file.
-
-=head2 write_file [INTERNAL]
-
-See above.
+Forces an immediate cleanup of the current object's directory.  See
+File::Path's rmtree().  It is not safe to use the object after this
+method is called.
 
 =head1 RATIONALE 
 
@@ -781,10 +720,8 @@ Here's how to do the same thing with File::Temp:
 
     # tests
 
-
 I find Directory::Scratch easier to use, but this is Perl, so
-TMTOWTDI.  Please use what you prefer.  CPAN isn't a popularity
-contest.
+TMTOWTDI.
 
 =head1 PATCHES
 
@@ -798,6 +735,7 @@ L<svn://svn.jrock.us/cpan_modules/Directory-Scratch>
  L<File::Temp>
  L<File::Path>
  L<File::Spec>
+ L<Path::Class>
 
 =head1 BUGS
 
@@ -817,8 +755,6 @@ Thanks to Al Tobey (TOBEYA) for some excellent patches, notably:
 =item C<tempfile>
 
 =item C<openfile>
-
-=item C<readfile>, C<writefile>
 
 =back
 
