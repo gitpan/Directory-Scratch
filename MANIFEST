@@ -1,4 +1,3 @@
-.cvsignore
 Changes
 examples/basic.pl
 inc/ExtUtils/AutoInstall.pm
@@ -36,11 +35,14 @@ t/integration/10-new-with-arguments.t
 t/integration/11-cleanup.t
 t/integration/11-stringify.t
 t/integration/12-randfile.t
+t/integration/other_output_seperator.t
 t/os/mac.t
 t/os/win32.t
 t/unit/append.t
 t/unit/cleanup.t
 t/unit/delete.t
+t/unit/invalid_clone.t
+t/unit/invalid_directory.t
 t/unit/link.t
 t/unit/ls.t
 t/unit/mkdir.t

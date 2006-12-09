@@ -11,25 +11,25 @@ use Path::Class qw(dir file);
 use File::Slurp qw(read_file write_file);
 use File::Spec;
 
-my ($our_platform) = $File::Spec::ISA[0] =~ /::(\w+)$/;
-my $platform = 'Unix';
+my ($OUR_PLATFORM) = $File::Spec::ISA[0] =~ /::(\w+)$/;
+my $PLATFORM = 'Unix';
 use Scalar::Util qw(blessed);
 
 use overload q{""} => \&base,
   fallback => "yes, fallback";
 
 
-our $VERSION = '0.09';
+our $VERSION = '0.10';
 
 # allow the user to specify which OS's semantics he wants to use
 # if platform is undef, then we won't do any translation at all
 sub import {
     my $class = shift;
     return unless @_;
-    $platform = shift;
-    eval("require File::Spec::$platform") if $platform;
-    croak "Don't know how to deal with platform '$platform'" if $@;
-    return $platform;
+    $PLATFORM = shift;
+    eval("require File::Spec::$PLATFORM");
+    croak "Don't know how to deal with platform '$PLATFORM'" if $@;
+    return $PLATFORM;
 }
 
 # create an instance
@@ -40,6 +40,8 @@ sub new {
 
     eval { %args = @_ };
     croak 'Invalid number of arguments to Directory::Scratch->new' if $@;
+    my $platform = $PLATFORM;
+    $platform = $args{platform} if defined $args{platform};
     
     # explicitly default CLEANUP to 1
     $args{CLEANUP} = 1 unless exists $args{CLEANUP};
@@ -71,7 +73,7 @@ sub new {
     $self->{base} = $base;
 
     bless $self, $class;    
-    $self->platform($platform || $args{platform}); # set platform for this instance
+    $self->platform($platform); # set platform for this instance
     return $self;
 }
 
@@ -117,7 +119,7 @@ sub _foreign_file {
     if($platform){
 	use YAML;
 	my $file = Path::Class::foreign_file($platform, @_);
-	return $file->as_foreign($our_platform);
+	return $file->as_foreign($OUR_PLATFORM);
     }
     else {
 	return Path::Class::file(@_);
@@ -130,7 +132,7 @@ sub _foreign_dir {
 
     if($platform){
 	my $dir = Path::Class::foreign_dir($platform, @_);
-	return $dir->as_foreign($our_platform);
+	return $dir->as_foreign($OUR_PLATFORM);
     }
     else {
 	return Path::Class::dir(@_);
@@ -264,12 +266,9 @@ sub openfile {
 sub touch {
     my $self = shift;
     my $file = shift;
-    
-    local $, = $, || "\n"; 
     my ($fh, $path) = $self->openfile($file);
     
-    write_file($fh, map { $_. ($, || "\n") } @_) 
-      or croak "Write error to $path: $!";
+    $self->write($file, @_) || croak 'failed to write file: $!';
     return $path;
 }
 
@@ -598,8 +597,18 @@ Example:
 =head2 read($file)
 
 Returns the contents of $file.  In array context, returns a list of
-chompped lines.  In scalar context, returns a chomped representation
-of the entire file.
+chompped lines.  In scalar context, returns the raw octets of the
+file (with any trailing newline removed).
+
+If you wrote the file with C<$,> set, you'll want to set C<$/> to
+C<$,> when reading the file back in:
+
+    local $, = '!';
+    $tmp->touch('foo', qw{foo bar baz}); # writes "foo!bar!baz!" to disk
+    scalar $tmp->read('foo') # returns "foo!bar!baz!"
+    $tmp->read('foo') # returns ("foo!bar!baz!")
+    local $/ = '!';
+    $tmp->read('foo') # returns ("foo", "bar", "baz")
 
 =head2 write($file, @lines)
 
