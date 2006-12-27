@@ -19,4 +19,4 @@ requires:
   File::Temp: 0
   Path::Class: 0
 tests: t/*/*.t
-version: 0.10
+version: 0.11

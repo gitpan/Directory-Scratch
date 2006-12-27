@@ -19,7 +19,7 @@ use overload q{""} => \&base,
   fallback => "yes, fallback";
 
 
-our $VERSION = '0.10';
+our $VERSION = '0.11';
 
 # allow the user to specify which OS's semantics he wants to use
 # if platform is undef, then we won't do any translation at all
@@ -45,6 +45,11 @@ sub new {
     
     # explicitly default CLEANUP to 1
     $args{CLEANUP} = 1 unless exists $args{CLEANUP};
+    
+    # don't clean up if environment variable is set
+    $args{CLEANUP} = 0
+    if(defined $ENV{PERL_DIRECTORYSCRATCH_CLEANUP} &&
+       $ENV{PERL_DIRECTORYSCRATCH_CLEANUP} == 0);
     
     # TEMPLATE is a special case, since it's positional in File::Temp
     my @file_temp_args;
@@ -308,7 +313,8 @@ sub ls {
 	    $full  = file($base, $file);
 	}
 	
-	$short = $file if(!$dir || $dir eq '/');
+	$short = $file if(!$dir || 
+			  $dir eq Path::Class::foreign_dir('Unix', '/'));
 
 	#print {*STDERR} "[$base][$file: $short -> $full]\n";
 	
@@ -663,74 +669,10 @@ Forces an immediate cleanup of the current object's directory.  See
 File::Path's rmtree().  It is not safe to use the object after this
 method is called.
 
-=head1 RATIONALE 
+=head1 ENVIRONMENT
 
-Why a module for this?  Before the module, my tests usually looked
-like this:
-
-    use Test::More tests => 42;
-    use Foo::Bar;
-
-    my $TESTDIR = "/tmp/test.$$";
-    my $FILE    = "$TESTDIR/file";
-    mkdir $TESTDIR;
-    open(my $file, '>', $FILE) or die $!;
-    print {$file} "test\n" or die $!;
-    close($file) or die $!;
-
-    ok(-e $FILE);
-
-    # tests
- 
-    END { `rm -rf $TESTDIR` }
-
-Nasty.  (What if rm doesn't work?  What if the test dies half way
-through?  What if /tmp doesn't exist? What if C</> isn't the path
-separator?  etc., etc.)
-
-Now they look like this:
-
-    use Foo::Bar;
-    use Directory::Scratch;
-    use Test::More tests => 42;
-
-    my  $tmp = Directory::Scratch->new;
-    my $FILE = $tmp->touch('file', "test");
-
-    ok(-e $FILE)
-
-    # tests
-
-Portable.  Readable.  Clean.  
-
-Much better.
-
-=head2 TO THE NITPICKERS
-
-Many people have complained that the above rationale section isn't
-good enough.  I've never seen another module that even I<has> a
-rationale section, but whatever.  
-
-Here's how to do the same thing with File::Temp:
-
-    use Foo::Bar;
-    use File::Temp qw(tempdir);
-    use File::Spec::Functions qw(catfile);
-    use Test::More tests => 42;
-
-    my $TMPDIR = tempdir(CLEANUP => 1, TMPDIR => 1);
-    my $FILE   = catfile($TMPDIR, 'file');
-
-    open my $fh, '>', $file or die $!;
-    print {$fh} "test\n" or die $!;
-    close $fh or die $!;
-
-    ok(-e $FILE);
-
-    # tests
-
-I find Directory::Scratch easier to use, but this is Perl, so
-TMTOWTDI.
+If the C<PERL_DIRECTORYSCRATCH_CLEANUP> variable is set to 0, automatic
+cleanup will be suppressed.
 
 =head1 PATCHES
 
