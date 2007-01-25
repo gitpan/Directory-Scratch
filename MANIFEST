@@ -10,6 +10,7 @@ inc/Module/Install/Fetch.pm
 inc/Module/Install/Include.pm
 inc/Module/Install/Makefile.pm
 inc/Module/Install/Metadata.pm
+inc/Module/Install/PAR.pm
 inc/Module/Install/Win32.pm
 inc/Module/Install/WriteAll.pm
 lib/Directory/Scratch.pm
@@ -40,6 +41,7 @@ t/os/mac.t
 t/os/win32.t
 t/unit/append.t
 t/unit/cleanup.t
+t/unit/create_tree.t
 t/unit/delete.t
 t/unit/invalid_clone.t
 t/unit/invalid_directory.t

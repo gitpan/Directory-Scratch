@@ -19,7 +19,7 @@ use overload q{""} => \&base,
   fallback => "yes, fallback";
 
 
-our $VERSION = '0.11';
+our $VERSION = '0.12';
 
 # allow the user to specify which OS's semantics he wants to use
 # if platform is undef, then we won't do any translation at all
@@ -122,7 +122,6 @@ sub _foreign_file {
     my $platform = $self->platform;
 
     if($platform){
-	use YAML;
 	my $file = Path::Class::foreign_file($platform, @_);
 	return $file->as_foreign($OUR_PLATFORM);
     }
@@ -189,6 +188,8 @@ sub read {
     my $base = $self->base;
     
     $file = $self->_foreign_file($base, $file);
+
+    croak "Cannot read $file: is a directory" if -d $file;
     
     if(wantarray){
 	my @lines = read_file($file->stringify);
@@ -282,54 +283,45 @@ sub ls {
     my $self = shift;
     my $dir = shift;
     my $base = $self->base;
-
+    my $path = dir($base);
     my @result;
-    my $path;
-    
+
     if($dir){
 	$dir = $self->_foreign_dir($dir); 
 	$path = $self->exists($dir);    
-	return () if !$path;
+	croak "No path `$dir' in temporary directory"  if !$path;
+	
 	return (file($dir)) if !-d $path;
 	$path = dir($base, $dir);
     }
-    else {
-	$path = dir($base);
-    }
     
-    opendir my $dh, $path or croak "Failed to open directory $base: $!";
-    while(my $file = readdir $dh){
-	next if $file eq '.';
-	next if $file eq '..';
+    $path->recurse( callback => 
+		    sub {
+			my $file = shift;
+			return if $file eq $path;
 
-	my $full;
-	my $short;
-	if($dir){
-	    $short = file($dir, $file);
-	    $full  = file($base, $dir, $file);
+			push @result, $file->relative($base);
+		    }
+		  );
+    
+    return @result;
+}
+
+sub create_tree {
+    my $self = shift;
+    my %tree = %{shift()||{}};
+    
+    foreach my $element (keys %tree){
+	my $value = $tree{$element};
+	if('SCALAR' eq ref $value){
+	    $self->mkdir($element);
 	}
 	else {
-	    $short = file($file);
-	    $full  = file($base, $file);
-	}
-	
-	$short = $file if(!$dir || 
-			  $dir eq Path::Class::foreign_dir('Unix', '/'));
-
-	#print {*STDERR} "[$base][$file: $short -> $full]\n";
-	
-	if(-d $full){ #push child elements on
-	    #print {*STDERR} "RECURSE -->\n";
-	    push @result, $self->ls($short);
-	    #print {*STDERR} "<-- RECURSE\n";
-	    push @result, dir($short); # push ourselves on 
-	}
-	else {
-	    push @result, file($short);
+	    my @lines = ($value);
+	    @lines = @$value if 'ARRAY' eq ref $value;
+	    $self->touch($element, @lines);
 	}
     }
-    closedir $dh;
-    return @result;
 }
 
 sub delete {
@@ -554,6 +546,28 @@ of C<@lines> separated by the output record separator C<$\>.
 The Path::Class object representing the new file is returned if the
 operation is successful, an exception is thrown otherwise.
 
+=head2 create_tree(%tree)
+
+Creates a file for every key/value pair if the hash, using the key as
+the filename and the value as the contents.  If the value is an
+arrayref, the array is used as the optional @lines argument to
+C<touch>.  If the value is a reference to C<undef>, then a directory
+is created instead of a file.
+
+Example:
+
+    %tree = ( 'foo'     => 'this is foo',
+              'bar/baz' => 'this is baz inside bar',
+              'lines'   => [qw|this file contains 5 lines|],
+              'dir'     => \undef,
+            );
+    $tmp->create_tree(%tree);
+
+In this case, two directories are created, C<dir> and C<bar>; and
+three files are created, C<foo>, C<baz> (inside C<bar>), and
+C<lines>. C<foo> and C<baz> contain a single line, while C<lines>
+contains 5 lines.
+
 =head2 openfile($filename)
 
 Opens $filename for writing and reading (C<< +> >>), and returns the
@@ -651,7 +665,10 @@ this method.  (The method will C<croak> if it won't work.)
 =head2 ls([$path])
 
 Returns a list (in no particular order) of all files below C<$path>.
-If C<$path> is omitted, the root is assumed.
+If C<$path> is omitted, the root is assumed.  Note that directories
+are not returned.
+
+If C<$path> does not exist, an exception is thrown.
 
 =head2 delete($path)
 
