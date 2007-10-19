@@ -10,6 +10,7 @@ use File::Copy;
 use Path::Class qw(dir file);
 use File::Slurp qw(read_file write_file);
 use File::Spec;
+use File::stat (); # no imports
 
 my ($OUR_PLATFORM) = $File::Spec::ISA[0] =~ /::(\w+)$/;
 my $PLATFORM = 'Unix';
@@ -19,7 +20,7 @@ use overload q{""} => \&base,
   fallback => "yes, fallback";
 
 
-our $VERSION = '0.12';
+our $VERSION = '0.13';
 
 # allow the user to specify which OS's semantics he wants to use
 # if platform is undef, then we won't do any translation at all
@@ -153,6 +154,18 @@ sub exists {
     return; # undef otherwise
 }
 
+sub stat {
+    my $self = shift;
+    my $file = shift;
+    my $path = $self->_foreign_file($self->base, $file);
+
+    if(wantarray){
+        return stat $path; # core stat, returns a list
+    }
+    
+    return File::stat::stat($path); # returns an object
+}
+
 sub mkdir {
     my $self = shift;
     my $dir  = shift;
@@ -181,6 +194,14 @@ sub link {
     return $to;
 }
 
+sub chmod {
+    my $self  = shift;
+    my $mode  = shift;
+    my @paths = @_;
+    
+    my @translated = map { $self->_foreign_file($self->base, $_) } @paths;
+    return chmod $mode, @translated;
+}
 
 sub read {
     my $self = shift;
@@ -614,6 +635,11 @@ Example:
        say "No file called $file."
     }
 
+=head2 stat($file)
+
+Stats C<$file>.  In list context, returns the list returned by the
+C<stat> builtin.  In scalar context, returns a C<File::stat> object.
+
 =head2 read($file)
 
 Returns the contents of $file.  In array context, returns a list of
@@ -680,6 +706,15 @@ Otherwise, an exception is thrown.
 (Note: delete means C<unlink> for a file and C<rmdir> for a directory.
 C<delete>-ing an unempty directory is an error.)
 
+=head2 chmod($octal_permissions, @files)
+
+Sets the permissions C<$octal_permissions> on C<@files>, returning the
+number of files successfully changed. Note that C<'0644'> is
+C<--w----r-T>, not C<-rw-r--r-->.  You need to pass in C<oct('0644')>
+or a literal C<0644> for this method to DWIM.  The method is just a
+passthru to perl's built-in C<chmod> function, so see C<perldoc -f
+chmod> for full details.
+
 =head2 cleanup
 
 Forces an immediate cleanup of the current object's directory.  See
@@ -694,9 +729,19 @@ cleanup will be suppressed.
 =head1 PATCHES
 
 Commentary, patches, etc. are most welcome.  If you send a patch,
-try patching the subversion version available from:
+try patching the git version available from:
 
-L<svn://svn.jrock.us/cpan_modules/Directory-Scratch>
+L<git://git.jrock.us/Directory-Scratch>.
+
+You can check out a copy by running:
+
+    git clone git://git.jrock.us/Directory-Scratch
+
+Then you can use git to commit changes and then e-mail me a patch, or
+you can publish the repository and ask me to pull the changes.  More
+information about git is available from
+
+L<http://git.or.cz/>
 
 =head1 SEE ALSO
 
