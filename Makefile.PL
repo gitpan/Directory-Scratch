@@ -22,7 +22,10 @@ features
   'String::Random for random files' => 
   ['String::Random' => 0];
 
-par_base 'JROCKWAY';
+authority 'JROCKWAY';
+resources(
+    repository => 'git://github.com/bobtfish/directory-scratch.git',
+);
 
 tests 't/*/*.t';
 WriteAll;

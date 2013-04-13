@@ -1,3 +1,5 @@
+Directory-Scratch-*
+MYMETA.*
 .git/
 blib
 pm_to_blib
