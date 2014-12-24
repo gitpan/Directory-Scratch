@@ -4,7 +4,7 @@
 
 use Test::More tests => 8;
 use Directory::Scratch;
-use File::Slurp qw(read_file);
+use Path::Tiny;
 use strict;
 use warnings;
 
@@ -27,7 +27,7 @@ ok(!$@, 'writing to fh works');
 ok(close $fh, 'closed fh');
 
 ok($tmp->exists('bar'), 'bar exists');
-my $contents = read_file($tmp->exists('bar')->stringify);
+my $contents = path($tmp->exists('bar')->stringify)->slurp;
 is($contents, "Foo\nbar\nbaz\n", 'bar can be read');
 
  

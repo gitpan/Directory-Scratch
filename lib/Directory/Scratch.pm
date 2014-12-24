@@ -1,5 +1,7 @@
 package Directory::Scratch;
+# git description: 0.15-8-g8221812
 
+{ our $VERSION = '0.15'; }
 # see POD after __END__.
 
 use warnings;
@@ -8,7 +10,7 @@ use Carp;
 use File::Temp;
 use File::Copy;
 use Path::Class qw(dir file);
-use File::Slurp qw(read_file write_file);
+use Path::Tiny;
 use File::Spec;
 use File::stat (); # no imports
 
@@ -18,9 +20,6 @@ use Scalar::Util qw(blessed);
 
 use overload q{""} => \&base,
   fallback => "yes, fallback";
-
-
-our $VERSION = '0.15';
 
 # allow the user to specify which OS's semantics he wants to use
 # if platform is undef, then we won't do any translation at all
@@ -213,12 +212,12 @@ sub read {
     croak "Cannot read $file: is a directory" if -d $file;
     
     if(wantarray){
-	my @lines = read_file($file->stringify);
+	my @lines = path($file->stringify)->lines;
 	chomp @lines;
 	return @lines;
     }
     else {
-	my $scalar = read_file($file->stringify);
+	my $scalar = path($file->stringify)->slurp;
 	chomp $scalar;
 	return $scalar;
     }
@@ -239,12 +238,13 @@ sub write {
 
     my $args;
     if(defined $method && $method eq 'Directory::Scratch::append'){
-	$args->{append} = 1;
-	write_file($path->stringify, $args, map { $_. ($, || "\n") } @_) 
+	local $, = $, || "\n";
+	path($path->stringify)->append(@_, '') 
 	  or croak "Error writing file: $!";
     }
     else { # (cut'n'paste)++
-	write_file($path->stringify, map { $_. ($, || "\n") } @_) 
+	local $, = $, || "\n";
+	path($path->stringify)->spew(@_, '') 
 	  or croak "Error writing file: $!";
     }
     return 1;
@@ -407,10 +407,9 @@ sub randfile {
     
     my ($fh, $name) = $self->tempfile;
     croak "Could not open $name: $!" if !$fh;
-    $name = file($name);
     
     my $rand = String::Random->new();
-    write_file($fh, $rand->randregex(".{$min,$max}"));    
+    path($name)->spew($rand->randregex(".{$min,$max}"));    
     
     return file($name);
 }
@@ -428,7 +427,17 @@ __END__
 
 =head1 NAME
 
-Directory::Scratch - Easy-to-use self-cleaning scratch space.
+Directory::Scratch - (DEPRECATED) Easy-to-use self-cleaning scratch space.
+
+=head1 VERSION
+
+version 0.15
+
+=head1 DEPRECATION NOTICE
+
+This module has not been maintained in quite some time, and now there are
+other options available, which are much more actively maintained. Please
+use L<Test::TempDir::Tiny> instead of this module.
 
 =head1 SYNOPSIS
 
@@ -436,7 +445,7 @@ When writing test suites for modules that operate on files, it's often
 inconvenient to correctly create a platform-independent temporary
 storage space, manipulate files inside it, then clean it up when the
 test exits.  The inconvenience usually results in tests that don't work
-everwhere, or worse, no tests at all.
+everywhere, or worse, no tests at all.
 
 This module aims to eliminate that problem by making it easy to do
 things right.
@@ -465,7 +474,7 @@ Example:
 =head1 EXPORT
 
 The first argument to the module is optional, but if specified, it's
-interperted as the name of the OS whose file naming semantics you want
+interpreted as the name of the OS whose file naming semantics you want
 to use with Directory::Scratch.  For example, if you choose "Unix",
 then you can provide paths to Directory::Scratch in UNIX-form
 ('foo/bar/baz') on any platform.  Unix is the default if you don't
@@ -536,7 +545,7 @@ directory and its contents are removed.
     );
 
 If C<DIR>, C<CLEANUP>, or C<TEMPLATE> are omitted, reasonable defaults
-are selected.  C<CLEANUP> is on by default, and C<DIR> is set to C<File::Spec->tmpdir>;
+are selected.  C<CLEANUP> is on by default, and C<DIR> is set to C<< File::Spec->tmpdir >>;
 
 =head2 child
 
@@ -552,7 +561,7 @@ object.
 =head2 platform([$platform])
 
 Returns the name of the platform that the filenames are being
-interperted as (i.e., "Win32" means that this module expects paths
+interpreted as (i.e., "Win32" means that this module expects paths
 like C<\foo\bar>, whereas "UNIX" means it expects C</foo/bar>).
 
 If $platform is sepcified, the platform is changed to the passed
