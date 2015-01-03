@@ -26,7 +26,7 @@ no_index:
 provides:
   Directory::Scratch:
     file: lib/Directory/Scratch.pm
-    version: '0.15'
+    version: '0.16'
 requires:
   Carp: '0'
   File::Copy: '0'
@@ -45,7 +45,7 @@ resources:
   bugtracker: https://rt.cpan.org/Public/Dist/Display.html?Name=Directory-Scratch
   homepage: https://github.com/karenetheridge/Directory-Scratch
   repository: https://github.com/karenetheridge/Directory-Scratch.git
-version: '0.15'
+version: '0.16'
 x_Dist_Zilla:
   perl:
     version: '5.021006'
@@ -84,7 +84,7 @@ x_Dist_Zilla:
           phase: build
           skip: []
       name: '@Author::ETHER/stale modules, build'
-      version: '0.032'
+      version: '0.033'
     -
       class: Dist::Zilla::Plugin::PromptIfStale
       config:
@@ -95,7 +95,7 @@ x_Dist_Zilla:
           phase: release
           skip: []
       name: '@Author::ETHER/stale modules, release'
-      version: '0.032'
+      version: '0.033'
     -
       class: Dist::Zilla::Plugin::ExecDir
       name: '@Author::ETHER/ExecDir'
@@ -117,6 +117,7 @@ x_Dist_Zilla:
       config:
         Dist::Zilla::Plugin::GatherDir:
           exclude_filename:
+            - README.pod
             - ''
           exclude_match: []
           follow_symlinks: '0'
@@ -228,13 +229,16 @@ x_Dist_Zilla:
       name: '@Author::ETHER/Test::Portability'
       version: '2.000005'
     -
+      class: Dist::Zilla::Plugin::Git::Describe
+      config:
+        Dist::Zilla::Plugin::Git::Describe:
+          on_package_line: '1'
+      name: '@Author::ETHER/Git::Describe'
+      version: '0.004'
+    -
       class: Dist::Zilla::Plugin::PkgVersion
       name: '@Author::ETHER/PkgVersion'
       version: '5.029'
-    -
-      class: Dist::Zilla::Plugin::Git::Describe
-      name: '@Author::ETHER/Git::Describe'
-      version: '0.003'
     -
       class: Dist::Zilla::Plugin::NextRelease
       name: '@Author::ETHER/NextRelease'
@@ -282,7 +286,7 @@ x_Dist_Zilla:
           inherit_version: '1'
           meta_noindex: '1'
       name: '@Author::ETHER/MetaProvides::Package'
-      version: '2.001002'
+      version: '2.002000'
     -
       class: Dist::Zilla::Plugin::MetaConfig
       name: '@Author::ETHER/MetaConfig'
@@ -471,8 +475,7 @@ x_Dist_Zilla:
       class: Dist::Zilla::Plugin::Git::Commit
       config:
         Dist::Zilla::Plugin::Git::Commit:
-          add_files_in:
-            - .
+          add_files_in: []
           commit_msg: '%N-%v%t%n%n%c'
           time_zone: local
         Dist::Zilla::Role::Git::DirtyFiles:
@@ -494,7 +497,7 @@ x_Dist_Zilla:
         Dist::Zilla::Plugin::Git::Tag:
           branch: ~
           signed: 0
-          tag: v0.15
+          tag: v0.16
           tag_format: v%v%t
           tag_message: v%v%t
           time_zone: local
@@ -505,7 +508,7 @@ x_Dist_Zilla:
     -
       class: Dist::Zilla::Plugin::GitHub::Update
       name: '@Author::ETHER/GitHub::Update'
-      version: '0.38'
+      version: '0.39'
     -
       class: Dist::Zilla::Plugin::Git::Push
       config:
@@ -574,10 +577,10 @@ x_authority_from_module: Directory::Scratch
 x_contributors:
   - 'jon <jon@01d9642f-1d18-0410-bea3-844bd6f27a17>'
   - 'Jonathan Rockway <jon@jrock.us>'
-  - 'Tomas Doran <bobtfish@bobtfish.net>'
   - 'Karen Etheridge <ether@cpan.org>'
+  - 'Tomas Doran <bobtfish@bobtfish.net>'
   - 'Chris Weyl <cweyl@alumni.drew.edu>'
   - 'Matt Boyle <mlb-github@corefiling.co.uk>'
-  - 'Frank Wiegand <FWIE@cpan.org>'
   - 'David Steinbrunner <dsteinbrunner@pobox.com>'
+  - 'Frank Wiegand <FWIE@cpan.org>'
 x_permissions_from_module: Directory::Scratch

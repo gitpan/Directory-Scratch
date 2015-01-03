@@ -78,7 +78,7 @@ EOW
         "Jonathan Rockway <jrockway\@cpan.org>"
       ],
       "dist_name" => "Directory-Scratch",
-      "dist_version" => "0.15",
+      "dist_version" => "0.16",
       "license" => "perl",
       "module_name" => "Directory::Scratch",
       "recommends" => {},

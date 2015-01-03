@@ -1,5 +1,8 @@
 Revision history for Directory-Scratch
 
+0.16    2015-01-03 20:53:28Z
+        - re-release to fix problematic $VERSION declaration (RT#101095)
+
 0.15    2014-12-24 23:48:36Z
         - convert to Dist::Zilla, with more metadata
         - pod patch (RT#51615)

@@ -1,7 +1,5 @@
-package Directory::Scratch;
-# git description: 0.15-8-g8221812
-
-{ our $VERSION = '0.15'; }
+package Directory::Scratch; # git description: v0.15-1-g5e2e598
+$Directory::Scratch::VERSION = '0.16';
 # see POD after __END__.
 
 use warnings;
@@ -431,7 +429,7 @@ Directory::Scratch - (DEPRECATED) Easy-to-use self-cleaning scratch space.
 
 =head1 VERSION
 
-version 0.15
+version 0.16
 
 =head1 DEPRECATION NOTICE
 
